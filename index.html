@@ -31,14 +31,19 @@
 </div>
 
 <script>
-let LIFF_ID = '';
+/** ▼▼ ここを差し替え ▼▼
+ * BASE: GAS WebアプリURL（/exec まで）
+ * LIFF_ID: LINE Developers の LIFF ID
+ */
+const BASE   = 'https://script.google.com/macros/s/AKfycbwES9l2DfnuzR_d8aXBTsNO_AkKnZfmlI-ANiBoUWEemYebM_ykzdbV7mPDyr1c36WC/exec';
+const LIFF_ID = '2008192477-4pJ07kDE';
+/** ▲▲ 差し替えここまで ▲▲ */
+
 let userId = '';
 let period = null;
 let closed = [];
 const selections = {}; // date -> '昼' | '夜' | '未注文'
 const disabledDates = new Set();
-
-function fmtDate(d){ return d; } // yyyy-MM-ddそのまま
 
 function isWeekend(dstr){
   const d = new Date(dstr + 'T00:00:00+09:00');
@@ -61,8 +66,7 @@ function render(){
     div.appendChild(label);
 
     const c = document.createElement('div');
-    const opts = ['昼','夜','未注文'];
-    opts.forEach(opt=>{
+    ['昼','夜','未注文'].forEach(opt=>{
       const b = document.createElement('span');
       b.className = 'badge' + (selections[d]===opt ? ' active':'');
       b.textContent = opt;
@@ -79,7 +83,7 @@ function render(){
 }
 
 async function init(){
-  await liff.init({ liffId: "2008192477-4pJ07kDE" });
+  await liff.init({ liffId: LIFF_ID });
   if(!liff.isLoggedIn()){
     liff.login();
     return;
@@ -87,9 +91,10 @@ async function init(){
   const prof = await liff.getProfile();
   userId = prof.userId;
 
-  const res = await fetch(`?path=api/init&userId=${encodeURIComponent(userId)}`);
+  // <- GitHub Pages から GAS へ絶対URLでアクセス
+  const res = await fetch(`${BASE}?path=api/init&userId=${encodeURIComponent(userId)}`);
   const data = await res.json();
-  LIFF_ID = data.liffId || LIFF_ID;
+
   period = data.period;
   closed = data.closed || [];
   document.getElementById('meta').textContent = `${period.start} 〜 ${period.end}`;
@@ -114,23 +119,18 @@ async function save(){
       rows.push({ date, slot });
     }
   });
-  const url = `?path=api/save&userId=${encodeURIComponent(userId)}&rows=${encodeURIComponent(JSON.stringify(rows))}`;
+
+  const url = `${BASE}?path=api/save&userId=${encodeURIComponent(userId)}&rows=${encodeURIComponent(JSON.stringify(rows))}`;
   const res = await fetch(url);
   const data = await res.json();
   document.getElementById('msg').textContent = data.message || (data.ok?'OK':'NG');
-  if(data.ok){
-    // 戻す場合は liff.closeWindow();
-  }
+  // 完了後に閉じたい場合は： liff.closeWindow();
 }
 
 document.getElementById('saveBtn').addEventListener('click', save);
 
-// 最初に一度だけENVのLIFF_IDをサーバから取得する小技
-(async ()=>{
-  // 一旦ダミーで初期化 → doGet(api/init)で本LIFF IDを再取得
-  LIFF_ID = '2008192477-4pJ07kDE';
-  await init();
-})();
+// 起動
+init();
 </script>
 </body>
 </html>
