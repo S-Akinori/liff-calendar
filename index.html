@@ -15,7 +15,13 @@
     .muted { color:#888; font-size:12px; }
     button { padding:10px 16px; border:none; border-radius:8px; background:#007aff; color:#fff; font-size:16px; }
     .wrap { max-width: 680px; margin: 0 auto; }
+    .error { color:#b00020; }
   </style>
+
+  <!-- 1) 設定ファイルを最初に読み込む（キャッシュ更新は ?v=… で） -->
+  <script src="./config/app-config.js?v=20250929"></script>
+
+  <!-- 2) LIFF SDK -->
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 </head>
 <body>
@@ -28,21 +34,33 @@
     <button id="saveBtn">まとめて送信</button>
   </div>
   <div id="msg" class="row muted"></div>
+  <div id="err" class="error"></div>
 </div>
 
 <script>
-/** ▼▼ ここを差し替え ▼▼
- * BASE: GAS WebアプリURL（/exec まで）
- * LIFF_ID: LINE Developers の LIFF ID
- */
-const BASE   = 'https://script.google.com/macros/s/AKfycbwES9l2DfnuzR_d8aXBTsNO_AkKnZfmlI-ANiBoUWEemYebM_ykzdbV7mPDyr1c36WC/exec';
-const LIFF_ID = '2008192477-4pJ07kDE';
-/** ▲▲ 差し替えここまで ▲▲ */
+/* ===== 設定の取り込み・検証 ===== */
+(function assertConfig() {
+  if (!window.APP_CONFIG) {
+    document.getElementById('err').textContent = '設定ファイル(config/app-config.js)が読み込めていません。パスと公開設定を確認してください。';
+    throw new Error('APP_CONFIG missing');
+  }
+  const { BASE, LIFF_ID } = window.APP_CONFIG;
+  if (!BASE || !/^https?:\/\//.test(BASE)) {
+    document.getElementById('err').textContent = 'APP_CONFIG.BASE が未設定または不正です（GASの /exec URL を設定）。';
+    throw new Error('BASE invalid');
+  }
+  if (!LIFF_ID || typeof LIFF_ID !== 'string') {
+    document.getElementById('err').textContent = 'APP_CONFIG.LIFF_ID が未設定です（LIFF ID を設定）。';
+    throw new Error('LIFF_ID invalid');
+  }
+})();
+
+const { BASE, LIFF_ID } = window.APP_CONFIG;
 
 let userId = '';
 let period = null;
 let closed = [];
-const selections = {}; // date -> '昼' | '夜' | '未注文'
+const selections = {};        // { 'YYYY-MM-DD': '昼' | '夜' | '未注文' }
 const disabledDates = new Set();
 
 function isWeekend(dstr){
@@ -54,11 +72,12 @@ function isWeekend(dstr){
 function render(){
   const cal = document.getElementById('calendar');
   cal.innerHTML = '';
+  if (!period) return;
   period.days.forEach(d=>{
     const div = document.createElement('div');
     div.className = 'day';
-    const dis = disabledDates.has(d);
-    if(dis) div.classList.add('disabled');
+    const disabled = disabledDates.has(d);
+    if(disabled) div.classList.add('disabled');
 
     const label = document.createElement('div');
     label.textContent = d.slice(5);
@@ -71,7 +90,7 @@ function render(){
       b.className = 'badge' + (selections[d]===opt ? ' active':'');
       b.textContent = opt;
       b.onclick = ()=>{
-        if(dis) return;
+        if(disabled) return;
         selections[d] = opt;
         render();
       };
@@ -83,53 +102,73 @@ function render(){
 }
 
 async function init(){
-  await liff.init({ liffId: LIFF_ID });
-  if(!liff.isLoggedIn()){
-    liff.login();
-    return;
+  try{
+    await liff.init({ liffId: LIFF_ID });
+    if(!liff.isLoggedIn()){
+      liff.login();
+      return;
+    }
+    const prof = await liff.getProfile();
+    userId = prof.userId;
+
+    // 既存データの読込（＝入力済みを反映）
+    const res = await fetch(`${BASE}?path=api/init&userId=${encodeURIComponent(userId)}`, { cache:'no-store' });
+    if(!res.ok) throw new Error('api/init failed: ' + res.status);
+    const data = await res.json();
+
+    period = data.period;
+    closed = data.closed || [];
+    document.getElementById('meta').textContent = `${period.start} 〜 ${period.end}`;
+
+    // 選択不可日（週末＋休業日）
+    closed.forEach(d => disabledDates.add(d));
+    period.days.forEach(d => { if(isWeekend(d)) disabledDates.add(d); });
+
+    // 既存選択を適用
+    (data.existing || []).forEach(x => { selections[x.date] = x.slot; });
+    // 未設定は「未注文」で初期化
+    period.days.forEach(d => { if(!selections[d]) selections[d] = '未注文'; });
+
+    render();
+  }catch(err){
+    console.error(err);
+    document.getElementById('err').textContent = '初期化に失敗しました。設定値とLIFF/BASEの到達性を確認してください。';
   }
-  const prof = await liff.getProfile();
-  userId = prof.userId;
-
-  // <- GitHub Pages から GAS へ絶対URLでアクセス
-  const res = await fetch(`${BASE}?path=api/init&userId=${encodeURIComponent(userId)}`);
-  const data = await res.json();
-
-  period = data.period;
-  closed = data.closed || [];
-  document.getElementById('meta').textContent = `${period.start} 〜 ${period.end}`;
-
-  // disable: 週末 + 休業日
-  closed.forEach(d => disabledDates.add(d));
-  period.days.forEach(d => { if(isWeekend(d)) disabledDates.add(d); });
-
-  // 既存選択反映
-  (data.existing||[]).forEach(x => { selections[x.date] = x.slot; });
-  // 未設定を「未注文」に
-  period.days.forEach(d => { if(!selections[d]) selections[d] = '未注文'; });
-
-  render();
 }
 
 async function save(){
   document.getElementById('msg').textContent = '保存中...';
-  const rows = [];
-  Object.entries(selections).forEach(([date,slot])=>{
-    if(slot && slot !== '未注文' && !disabledDates.has(date)){
-      rows.push({ date, slot });
-    }
-  });
+  document.getElementById('err').textContent = '';
 
-  const url = `${BASE}?path=api/save&userId=${encodeURIComponent(userId)}&rows=${encodeURIComponent(JSON.stringify(rows))}`;
-  const res = await fetch(url);
-  const data = await res.json();
-  document.getElementById('msg').textContent = data.message || (data.ok?'OK':'NG');
-  // 完了後に閉じたい場合は： liff.closeWindow();
+  try{
+    // 「未注文」は保存しない＝サーバで当該期間の当ユーザー行を全削除→今回分のみ再挿入
+    const rows = [];
+    Object.entries(selections).forEach(([date,slot])=>{
+      if(slot && slot !== '未注文' && !disabledDates.has(date)){
+        rows.push({ date, slot }); // '昼' or '夜'
+      }
+    });
+
+    const url = `${BASE}?path=api/save&userId=${encodeURIComponent(userId)}&rows=${encodeURIComponent(JSON.stringify(rows))}`;
+    const res = await fetch(url, { cache:'no-store' });
+    if(!res.ok) throw new Error('api/save failed: ' + res.status);
+    const data = await res.json();
+
+    document.getElementById('msg').textContent = data.message || (data.ok?'OK':'NG');
+    if(!data.ok && data.message){
+      document.getElementById('err').textContent = data.message; // （例）締切後/上限到達/休業日等
+    }
+
+    // 最新状態を再取得したい場合は:
+    // if(data.ok){ await init(); }
+  }catch(err){
+    console.error(err);
+    document.getElementById('msg').textContent = '';
+    document.getElementById('err').textContent = '保存に失敗しました。ネットワークまたはAPI設定を確認してください。';
+  }
 }
 
 document.getElementById('saveBtn').addEventListener('click', save);
-
-// 起動
 init();
 </script>
 </body>
