@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>社食 注文カレンダー</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 12px; }
+    .row { display:flex; gap:8px; align-items:center; margin:8px 0; }
+    .grid { display:grid; grid-template-columns: repeat(7, 1fr); gap:6px; }
+    .day { border:1px solid #ddd; border-radius:8px; padding:6px; text-align:center; cursor:pointer; }
+    .day.disabled { background:#f3f3f3; color:#aaa; cursor:not-allowed; }
+    .badge { display:inline-block; border-radius:999px; padding:2px 8px; font-size:12px; border:1px solid #ccc; margin:2px; }
+    .active { background:#007aff; color:#fff; border-color:#007aff; }
+    .muted { color:#888; font-size:12px; }
+    button { padding:10px 16px; border:none; border-radius:8px; background:#007aff; color:#fff; font-size:16px; }
+    .wrap { max-width: 680px; margin: 0 auto; }
+  </style>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <h2>社食 注文カレンダー</h2>
+  <div id="meta" class="muted"></div>
+  <div class="grid" id="calendar"></div>
+  <div class="row" style="justify-content:space-between;">
+    <div class="muted">昼/夜/未注文 から選択</div>
+    <button id="saveBtn">まとめて送信</button>
+  </div>
+  <div id="msg" class="row muted"></div>
+</div>
+
+<script>
+let LIFF_ID = '';
+let userId = '';
+let period = null;
+let closed = [];
+const selections = {}; // date -> '昼' | '夜' | '未注文'
+const disabledDates = new Set();
+
+function fmtDate(d){ return d; } // yyyy-MM-ddそのまま
+
+function isWeekend(dstr){
+  const d = new Date(dstr + 'T00:00:00+09:00');
+  const w = d.getDay();
+  return (w===0 || w===6);
+}
+
+function render(){
+  const cal = document.getElementById('calendar');
+  cal.innerHTML = '';
+  period.days.forEach(d=>{
+    const div = document.createElement('div');
+    div.className = 'day';
+    const dis = disabledDates.has(d);
+    if(dis) div.classList.add('disabled');
+
+    const label = document.createElement('div');
+    label.textContent = d.slice(5);
+    label.style.fontWeight = 'bold';
+    div.appendChild(label);
+
+    const c = document.createElement('div');
+    const opts = ['昼','夜','未注文'];
+    opts.forEach(opt=>{
+      const b = document.createElement('span');
+      b.className = 'badge' + (selections[d]===opt ? ' active':'');
+      b.textContent = opt;
+      b.onclick = ()=>{
+        if(dis) return;
+        selections[d] = opt;
+        render();
+      };
+      c.appendChild(b);
+    });
+    div.appendChild(c);
+    cal.appendChild(div);
+  });
+}
+
+async function init(){
+  await liff.init({ liffId: "2008192477-4pJ07kDE" });
+  if(!liff.isLoggedIn()){
+    liff.login();
+    return;
+  }
+  const prof = await liff.getProfile();
+  userId = prof.userId;
+
+  const res = await fetch(`?path=api/init&userId=${encodeURIComponent(userId)}`);
+  const data = await res.json();
+  LIFF_ID = data.liffId || LIFF_ID;
+  period = data.period;
+  closed = data.closed || [];
+  document.getElementById('meta').textContent = `${period.start} 〜 ${period.end}`;
+
+  // disable: 週末 + 休業日
+  closed.forEach(d => disabledDates.add(d));
+  period.days.forEach(d => { if(isWeekend(d)) disabledDates.add(d); });
+
+  // 既存選択反映
+  (data.existing||[]).forEach(x => { selections[x.date] = x.slot; });
+  // 未設定を「未注文」に
+  period.days.forEach(d => { if(!selections[d]) selections[d] = '未注文'; });
+
+  render();
+}
+
+async function save(){
+  document.getElementById('msg').textContent = '保存中...';
+  const rows = [];
+  Object.entries(selections).forEach(([date,slot])=>{
+    if(slot && slot !== '未注文' && !disabledDates.has(date)){
+      rows.push({ date, slot });
+    }
+  });
+  const url = `?path=api/save&userId=${encodeURIComponent(userId)}&rows=${encodeURIComponent(JSON.stringify(rows))}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  document.getElementById('msg').textContent = data.message || (data.ok?'OK':'NG');
+  if(data.ok){
+    // 戻す場合は liff.closeWindow();
+  }
+}
+
+document.getElementById('saveBtn').addEventListener('click', save);
+
+// 最初に一度だけENVのLIFF_IDをサーバから取得する小技
+(async ()=>{
+  // 一旦ダミーで初期化 → doGet(api/init)で本LIFF IDを再取得
+  LIFF_ID = '2008192477-4pJ07kDE';
+  await init();
+})();
+</script>
+</body>
+</html>
